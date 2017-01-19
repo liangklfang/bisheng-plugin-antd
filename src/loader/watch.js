@@ -9,7 +9,6 @@ module.exports = function watch(tsCode) {
   if (this.cacheable) {
     this.cacheable();
   }
-
   const es6Code = ts.transpileModule(tsCode, {
     compilerOptions: {
       jsx: 'preserve',
