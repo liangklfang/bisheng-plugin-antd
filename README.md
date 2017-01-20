@@ -969,27 +969,32 @@ module.exports = () =>
          <!--获取标题的文件的内容-->
          return React.createElement(JsonML.getTagName(node), {
            key: index,
-           id: sluggedId,<!--id是文件的内容-->
-           ...JsonML.getAttributes(node),<!--得到所有的属性-->
+           id: sluggedId,<!--id是h1-6标签的内容，但是内容中的空格使用-符号替换了-->
+           ...JsonML.getAttributes(node),<!--得到所有的属性,node属性被封装到react中-->
          }, [
-            <!--这里是元素的子元素-->
+            <!--这里是元素的子元素，也就是h1-6的标签的内容就是span，其key就是title，在react面板中可以看到，Element面板是看不到的。每一个h1-6标签中的内容都会转化为React Component-->
            <span key="title">{children.map(child => toReactComponent(child))}<\/span>,
+           <!--这里的锚点就是我们的h标签的值，因为h标签有一个id为sluggish，所以这里的href指向这个id-->
            <a href={`#${sluggedId}`} className="anchor" key="anchor">#<\/a>,
          ]);
        }],
        [node => JsonML.isElement(node) && JsonML.getTagName(node) === 'video', (node, index) =>
-        <!--如果是video，那么使用VideoPlayer-->
+        <!--如果是video，那么实例化VideoPlayer，同时把video标签的属性传入-->
          <VideoPlayer video={JsonML.getAttributes(node)} key={index} \/>,
        ],
-       <!--a标签同时又href，同时以http开头-->
+       <!--a标签同时有href，同时以http开头，我们转化为Link标签-->
        [node => JsonML.isElement(node) && JsonML.getTagName(node) === 'a' && !(
         JsonML.getAttributes(node).class ||
           (JsonML.getAttributes(node).href &&
            JsonML.getAttributes(node).href.indexOf('http') === 0) ||
           \/^#\/.test(JsonML.getAttributes(node).href)
       ), (node, index) =>
-        <Link to={JsonML.getAttributes(node).href} key={index}>{toReactComponent(JsonML.getChildren(node)[0])}<\/Link>,
+        <Link to={JsonML.getAttributes(node).href} key={index}>  
+            <!--a标签的内容被转化为React组件-->
+           {toReactComponent(JsonML.getChildren(node)[0])}
+        <\/Link>,
        ],
+        <!--如果是p标签，同时p标签下有img标签，同时img又一个class为preview-img，那么我们会实例化我们的ImagePreview组件-->
        [node =>
          JsonML.isElement(node) &&
           JsonML.getTagName(node) === 'p' &&
@@ -1000,14 +1005,14 @@ module.exports = () =>
            const imgs = JsonML.getChildren(node)
                 .filter(img => JsonML.isElement(img) && Object.keys(JsonML.getAttributes(img)).length > 0)
                 .map(img => JsonML.getAttributes(img));
-                <!--使用ImagePreview-->
+                <!--使用ImagePreview,传入的img是一个image标签的所有的属性对象-->
            return <ImagePreview imgs={imgs} key={index} \/>;
          }],
      ],
    })
 ```
 
-首先，和我们的所有的插件一样也是返回一个converters数组，然后根据不同node选择实例化不同的组件。我们必须要弄明白一点，那就是我们的plugin的lib/browser下文件都是用于最后把jsomml转化成为我们的react组件的。
+首先，和我们的所有的插件一样也是返回一个converters数组，然后根据不同node选择实例化不同的组件。我们必须要弄明白一点，那就是我们的plugin的lib/browser下文件都是用于最后把jsomml转化成为我们的react组件的,再次贴出代码:
 
 ```js
   const browserPlugins = resolvePlugins(config.plugins, 'browser');
@@ -1028,8 +1033,185 @@ module.exports = () =>
   };
 ```
 
+我们看看VideoPlayer组件的代码:
 
+```js
+import React from 'react';
+import SublimeVideo from 'react-sublime-video';
+export default function VideoPlayer({ video }) {
+  //传入的是一个Video标签的属性对象
+  const { alt, description, src } = video;
+  const videoClassName = video.class;
+  //video的class属性
+  return (
+    <div className={`preview-image-box ${videoClassName}`}>
+      <div className={'preview-image-wrapper'}>
+           {/*实例化SublimeVideo*/}
+        <SublimeVideo src={src} type="video/mp4" loop/>
+      </div>
+      <div className="preview-image-title">{alt}</div>
+          {/*这里给出video的description属性*/}
+      <div className="preview-image-description"
+        dangerouslySetInnerHTML={{ __html: description }}
+      \/>
+    <\/div>
+  );
+}
+```
 
+实例化我们的ImagePreview组件:
+
+```jsx
+import React from 'react';
+import classNames from 'classnames';
+import Modal from 'antd/lib/modal';
+import Carousel from 'antd/lib/carousel';
+//\b表示单词的边界
+function isGood(className) {
+  return /\bgood\b/i.test(className);
+}
+//\b表示单词的边界
+function isBad(className) {
+  return /\bbad\b/i.test(className);
+}
+function PreviewImageBox({
+  cover, coverMeta, imgs, style, previewVisible,
+  comparable, onClick, onCancel
+}) {
+  const onlyOneImg = comparable || imgs.length === 1;
+  //如果只有一个图片
+  return (
+    <div className="preview-image-box" style={style}>
+      <div onClick={onClick} className={`preview-image-wrapper ${coverMeta.isGood && 'good'} ${coverMeta.isBad && 'bad'}`}>
+        <img className={coverMeta.className} src={coverMeta.src} alt={coverMeta.alt} />
+      </div>
+      <div className="preview-image-title">{coverMeta.alt}</div>
+      <div className="preview-image-description"
+        dangerouslySetInnerHTML={{ __html: coverMeta.description }}
+      />
+       {/*这里是一个弹窗*/}
+      <Modal className="image-modal" width={960} visible={previewVisible} title={null} footer={null}
+        onCancel={onCancel}>
+          {/*这里是一个旋转木马*/}
+          <Carousel className={`${onlyOneImg ? 'image-modal-single' : ''}`} draggable={!onlyOneImg} adaptiveHeight>
+            {comparable ? cover : imgs}
+          </Carousel>
+        <div className="preview-image-title">{coverMeta.alt}</div>
+      </Modal>
+    </div>
+  );
+}
+```
+
+下面是ImagePreview组件:
+
+```js
+export default class ImagePreview extends React.Component {
+  constructor(props) {
+    super(props);
+    //左右切换不可见
+    this.state = {
+      leftVisible: false,
+      rightVisible: false,
+    };
+    this.handleLeftClick = this.handleClick.bind(this, 'left');
+    this.handleRightClick = this.handleClick.bind(this, 'right');
+  }
+ //让左侧或者右侧可见
+  handleClick(side) {
+    this.setState({ [`${side}Visible`]: true });
+  }
+  //恢复左右不可见
+  handleCancel = () => {
+    this.setState({
+      leftVisible: false,
+      rightVisible: false,
+    });
+  }
+  render() {
+    const { imgs } = this.props;
+    //获取实例化ImagePreview时候传入的props
+    const imgsMeta = imgs.map((img) => {
+      const { alt, description, src } = img;
+      //image属性的alt,description,src,class属性
+      const imgClassName = img.class;
+      //img的class属性
+      return {
+        className: imgClassName,
+        alt, description, src,
+        isGood: isGood(imgClassName),
+        //className是否含有good
+        isBad: isBad(imgClassName),
+      };
+    });
+
+    const imagesList = imgsMeta.map((meta, index) => {
+      const metaCopy = { ...meta };
+      //获取每一个属性和值
+      delete metaCopy.description;
+      delete metaCopy.isGood;
+      delete metaCopy.isBad;
+      //移除我们的description,isGood,isBad防止传递给react组件抛出错误
+      return (
+        <div key={index}>
+          <div className="image-modal-container">
+            <img {...metaCopy} alt={meta.alt} \/>
+          <\/div>
+        <\/div>
+      );
+    });
+    //这里返回的DOM是包含了所有的image显示DOM的数组，长度必须是2
+    const comparable = imgs.length === 2 &&
+            (imgsMeta[0].isGood || imgsMeta[0].isBad) &&
+            (imgsMeta[1].isGood || imgsMeta[1].isBad);
+    const style = comparable ? { width: '50%' } : null;
+    const hasCarousel = imgs.length > 1 && !comparable;
+    //p下面的image，同时image有'preview-image'的image集合，如果长度大于1同时长度不是2
+    const previewClassName = classNames({
+      'preview-image-boxes': true,
+       clearfix: true,
+      'preview-image-boxes-with-carousel': hasCarousel,
+    });
+    return (
+      <div className={previewClassName}>
+       //实例化左侧的PreviewImageBox
+        <PreviewImageBox
+          style={style}
+          comparable={comparable}
+          previewVisible={this.state.leftVisible}
+          cover={imagesList[0]}
+          coverMeta={imgsMeta[0]}
+          imgs={imagesList}
+          onClick={this.handleLeftClick}
+          onCancel={this.handleCancel}
+        \/>
+        {
+          //实例化右侧PreviewImageBox
+          comparable ?
+            <PreviewImageBox
+              style={style}
+              comparable
+              previewVisible={this.state.rightVisible}
+              cover={imagesList[1]}
+              coverMeta={imgsMeta[1]}
+              imgs={imagesList}
+              onClick={this.handleRightClick}
+              onCancel={this.handleCancel}
+            \/> : null
+        }
+      <\/div>
+    );
+  }
+}
+```
+
+这里有几个点需要注意：
+
+(1)首先我们每一个h1-6标签有一个id，这个id和h标签下的a标签的href是一样的，所以这样就可以做到锚点跳转了
+
+(2)如果image标签，同时class有‘preview-image’这个类，那么我们就实例化`ImagePreview`组件
+
+(3)如果是a标签不是以http协议头开头,那么我们都转化为Link标签
 
 ### 1.6 bisheng-plugin-antd具体的组件的渲染不要掌握，因为到时候也会根据项目来做，不过看懂也是好的，到时候可以随机应变
 
