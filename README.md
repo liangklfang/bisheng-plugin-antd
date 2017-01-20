@@ -571,10 +571,339 @@ ReactDOM.render(React.createElement(
 所以说我们最后会在项目的_site目录下生产很多的demo页面并使用iframe来显示：
 ![](./demos.png)
 
-不过我们上面分析的是一个process-demo文件，我们还有一个文件对markdown文件的API部分进行处理，也就是如下部分：
+### 1.5 我们demo页面中的js是如何进行编译好的
+
+#### 1.5.1 处理页面中的demo内容(对应于显示组件中的ComponentDoc组件，其会实例化Demo组件)
+
+首先我们要知道bisheng-plugin-antd是最后一个配置在bisheng.config.js文件中的plugin
+
+```js
+plugins: [
+    'bisheng-plugin-description',//抽取markdown文件的中间的description部分
+    'bisheng-plugin-toc?maxDepth=2&keepElem',//产生一个目录
+    'bisheng-plugin-react?lang=__react',//将markdown书写的jsx转换成为React.createElement从而能够真正在页面中显示出来
+    'bisheng-pugin-antd',//为markdownData添加属性，生成demo页面
+  ]
+```
+
+要知道如何生成demo页面我们还是要仔细分析下下面的代码:
+
+```js
+ if (meta.iframe) {
+    const html = nunjucks.renderString(tmpl, {
+      id: meta.id,
+      style: markdownData.style,
+      script: babel.transform(getCode(markdownData.preview), babelrc).code,
+    });
+    const fileName = `demo-${Math.random()}.html`;
+    fs.writeFile(path.join(process.cwd(), '_site', fileName), html);
+    markdownData.src = path.join('/', fileName);
+  }
+```
+
+我们再给出一个传入到babel.transform中的`getCode(markdownData.preview)`值:
+
+```jsx
+import { Router, Route, Link, hashHistory } from 'react-router';
+import { Breadcrumb, Alert } from 'antd';
+const Apps = () => (
+  <ul className="app-list">
+    <li>
+      <Link to="/apps/1">Application1</Link>：<Link to="/apps/1/detail">Detail</Link>
+    </li>
+    <li>
+      <Link to="/apps/2">Application2</Link>：<Link to="/apps/2/detail">Detail</Link>
+    </li>
+  </ul>
+);
+const Home = ({ routes, params, children }) => (
+  <div>
+    <div className="demo-nav">
+      <Link to="/">Home</Link>
+      <Link to="/apps">Application List</Link>
+    </div>
+    {children || 'Home Page'}
+    <Alert style={{ margin: '16px 0' }} message="Click the navigation above to switch:" />
+    <Breadcrumb routes={routes} params={params} />
+  </div>
+);
+ReactDOM.render(
+  <Router history={hashHistory}>
+    <Route name="home" breadcrumbName="Home" path="/" component={Home}>
+      <Route name="apps" breadcrumbName="Application List" path="apps" component={Apps}>
+        <Route name="app" breadcrumbName="Application:id" path=":id">
+          <Route name="detail" breadcrumbName="Detail" path="detail" />
+        </Route>
+      </Route>
+    </Route>
+  </Router>
+, mountNode);
+```
+
+这时候你肯定很疑惑，为什么这时候我们传入的是jsx，而不是上面的jsonML?其实上面我已经提到过了，我们的preview方法在jsonml-react-loader中转化成了一个函数了(`我们bisheng-plugin-antd的node代码的执行是在jsonml-react-loader之前的，因为markdown-loader就是为了处理md文件的，其会解析所有的plugin下的node.js并执行，所以传递到我们的jsonml-react-loader的时候已经是jsonml文件了`)。此处我再给出一次代码：
+
+```js
+'use strict';
+const loaderUtils = require('loader-utils');
+const generator = require('babel-generator').default;
+const transformer = require('./transformer');
+module.exports = function jsonmlReactLoader(content) {
+  if (this.cacheable) {
+    this.cacheable();
+  }
+  const query = loaderUtils.parseQuery(this.query);
+  const lang = query.lang || 'react-example';
+  const res = transformer(content, lang);
+  const inputAst = res.inputAst;
+  const imports = res.imports;
+  for (let k = 0; k < imports.length; k++) {
+    inputAst.program.body.unshift(imports[k]);
+  }
+  const code = generator(inputAst, null, content).code;
+  const noreact = query.noreact;
+  if (noreact) {
+    return code;
+  }
+ var returnVal='import React from \'react\';\n' +
+    'import ReactDOM from \'react-dom\';\n' +
+    code;
+  return returnVal;
+};
+```
+
+transformer如下:
+
+```jsx
+'use strict';
+const babylon = require('babylon');
+const types = require('babel-types');
+const traverse = require('babel-traverse').default;
+function parser(content) {
+  return babylon.parse(content, {
+    sourceType: 'module',
+    plugins: [
+      'jsx',
+      'flow',
+      'asyncFunctions',
+      'classConstructorCall',
+      'doExpressions',
+      'trailingFunctionCommas',
+      'objectRestSpread',
+      'decorators',
+      'classProperties',
+      'exportExtensions',
+      'exponentiationOperator',
+      'asyncGenerators',
+      'functionBind',
+      'functionSent',
+    ],
+  });
+}
+module.exports = function transformer(content, lang) {
+  let imports = [];
+  const inputAst = parser(content);
+  traverse(inputAst, {
+    ArrayExpression: function(path) {
+      const node = path.node;
+      const firstItem = node.elements[0];
+      const secondItem = node.elements[1];
+      let renderReturn;
+      if (firstItem &&
+        firstItem.type === 'StringLiteral' &&
+        firstItem.value === 'pre' &&
+        secondItem.properties[0].value.value === lang) {
+        let codeNode = node.elements[2].elements[1];
+        let code = codeNode.value;
+        const codeAst = parser(code);
+        traverse(codeAst, {
+          ImportDeclaration: function(importPath) {
+            imports.push(importPath.node);
+            importPath.remove();
+          },
+          CallExpression: function(CallPath) {
+            const CallPathNode = CallPath.node;
+            if (CallPathNode.callee &&
+              CallPathNode.callee.object &&
+              CallPathNode.callee.object.name === 'ReactDOM' &&
+              CallPathNode.callee.property &&
+              CallPathNode.callee.property.name === 'render') {
+              renderReturn = types.returnStatement(
+                CallPathNode.arguments[0]
+              );
+              CallPath.remove();
+            }
+          },
+        });
+        const astProgramBody = codeAst.program.body;
+        const codeBlock = types.BlockStatement(astProgramBody);
+        // ReactDOM.render always at the last of preview method
+        if (renderReturn) {
+          astProgramBody.push(renderReturn);
+        }
+        const coceFunction = types.functionExpression(
+          types.Identifier('jsonmlReactLoader'),
+          [],
+          codeBlock
+        );
+        path.replaceWith(coceFunction);
+      }
+    },
+  });
+  return {
+    imports: imports,
+    inputAst: inputAst,
+  };
+};
+```
+
+此处你必须注意，jsonml-react-loader和其他的loader是不一样的，其真实的返回数据是如cwd/output/preview.js这种类型，这里我也贴出来展示下:
+
+```jsx
+import React from 'react';
+import ReactDOM from 'react-dom';
+import BrowserDemo from 'site/theme/template/BrowserDemo';
+import { Menu, Breadcrumb } from 'antd';
+module.exports = {
+  "content": [["p", "一二级导航都在顶部。"], ["p", "顶部导航在页面布局上采用的是上下的结构，一般主导航放置于页面的顶端，从左自右依次为：logo、一级导航项、辅助菜单（用户、设置、通知等）。通常将内容放在固定尺寸（例如：1200px）内，整个页面排版稳定，不受用户终端显示器影响；上下级的结构符合用户上下浏览的习惯，也是较为经典的网站导航模式。页面上下切分的方式提高了主工作区域的信息展示效率，但在纵向空间上会有一些牺牲。此外，由于导航栏水平空间的限制，不适合那些一级导航项很多的信息结构。"], ["blockquote", ["p", ["code", "<BrowserDemo />"], " 做演示用，无须复制。"]]],
+  "meta": {
+    "order": 0,
+    "title": "顶部导航",
+    "filename": "docs/spec/layout/demo/top.md",
+    "id": "docs-spec-layout-demo-top"
+  },
+  "toc": ["ul"],
+  "highlightedCode": ["pre", {
+    "lang": "jsx",
+    "highlighted": "<span class=\"token keyword\">import</span></span>"
+  }],
+  "preview": function jsonmlReactLoader() {
+    return <BrowserDemo>
+    <div className="ant-layout-top">
+      <div className="ant-layout-header">
+        <div className="ant-layout-wrapper">
+          <div className="ant-layout-logo"></div>
+          <Menu theme="dark" mode="horizontal" defaultSelectedKeys={['2']} style={{ lineHeight: '64px' }}>
+            <Menu.Item key="1">导航一</Menu.Item>
+            <Menu.Item key="2">导航二</Menu.Item>
+            <Menu.Item key="3">导航三</Menu.Item>
+          </Menu>
+        </div>
+      </div>
+      <div className="ant-layout-subheader">
+        <div className="ant-layout-wrapper">
+          <Menu mode="horizontal" defaultSelectedKeys={['1']} style={{ marginLeft: 124 }}>
+            <Menu.Item key="1">二级导航</Menu.Item>
+            <Menu.Item key="2">二级导航</Menu.Item>
+            <Menu.Item key="3">二级导航</Menu.Item>
+          </Menu>
+        </div>
+      </div>
+      <div className="ant-layout-wrapper">
+        <div className="ant-layout-breadcrumb">
+          <Breadcrumb>
+            <Breadcrumb.Item>首页</Breadcrumb.Item>
+            <Breadcrumb.Item>应用列表</Breadcrumb.Item>
+            <Breadcrumb.Item>某应用</Breadcrumb.Item>
+          </Breadcrumb>
+        </div>
+        <div className="ant-layout-container">
+          <div style={{ height: 210 }}></div>
+        </div>
+      </div>
+      <div className="ant-layout-footer">
+      Ant Design 版权所有 © 2015 由蚂蚁金服体验技术部支持
+      </div>
+    </div>
+  </BrowserDemo>;
+  },
+  "style": ".ant-layout-top {}",
+  "highlightedStyle": "<span class=\"token selector\"></span>"
+};
+```
+
+但是我们在markdown文件中源码却是(详见/input/asider.md):
+
+```jsx
+import { Menu, Breadcrumb, Icon } from 'antd';
+import BrowserDemo from 'site/theme/template/BrowserDemo';
+const SubMenu = Menu.SubMenu;
+ReactDOM.render(
+  <BrowserDemo>
+    <div className="ant-layout-aside">
+      <aside className="ant-layout-sider">
+        <div className="ant-layout-logo"><\/div>
+        <Menu mode="inline" theme="dark"
+          defaultSelectedKeys={['1']} defaultOpenKeys={['sub1']}>
+          <SubMenu key="sub1" title={<span><Icon type="user" \/>导航一<\/span>}>
+            <Menu.Item key="1">选项1<\/Menu.Item>
+            <Menu.Item key="2">选项2<\/Menu.Item>
+            <Menu.Item key="3">选项3<\/Menu.Item>
+            <Menu.Item key="4">选项4<\/Menu.Item>
+          <\/SubMenu>
+          <SubMenu key="sub2" title={<span><Icon type="laptop" \/>导航二<\/span>}>
+            <Menu.Item key="5">选项5<\/Menu.Item>
+            <Menu.Item key="6">选项6<\/Menu.Item>
+            <Menu.Item key="7">选项7<\/Menu.Item>
+            <Menu.Item key="8">选项8<\/Menu.Item>
+          <\/SubMenu>
+          <SubMenu key="sub3" title={<span><Icon type="notification" />导航三<\/span>}>
+            <Menu.Item key="9">选项9<\/Menu.Item>
+            <Menu.Item key="10">选项10<\/Menu.Item>
+            <Menu.Item key="11">选项11<\/Menu.Item>
+            <Menu.Item key="12">选项12<\/Menu.Item>
+          <\/SubMenu>
+        <\/Menu>
+      <\/aside>
+      <div className="ant-layout-main">
+        <div className="ant-layout-header"><\/div>
+        <div className="ant-layout-breadcrumb">
+          <Breadcrumb>
+            <Breadcrumb.Item>首页<\/Breadcrumb.Item>
+            <Breadcrumb.Item>应用列表<\/Breadcrumb.Item>
+            <Breadcrumb.Item>某应用<\/Breadcrumb.Item>
+          <\/Breadcrumb>
+        <\/div>
+        <div className="ant-layout-container">
+          <div className="ant-layout-content">
+            <div style={{ height: 590 }}>
+              内容区域
+            <\/div>
+          <\/div>
+        <\/div>
+        <div className="ant-layout-footer">
+        Ant Design 版权所有 © 2015 由蚂蚁金服体验技术部支持
+        <\/div>
+      <\/div>
+    <\/div>
+  <\/BrowserDemo>
+, mountNode);
+```
+
+也就是说，当加载markdown文件的时候，通过jsonml-react-loader处理后的结果其实得到的是上面的这种类型。我们看看在Demo页面中是如何显示上面的preview部分的内容的:
+
+```jsx
+   if (!this.liveDemo) {
+      this.liveDemo = meta.iframe ? <iframe src={src} \/> : preview(React, ReactDOM);
+    }
+   <section className="code-box-demo">
+      {this.liveDemo}
+      {
+        style ?
+          <style dangerouslySetInnerHTML={{ __html: style }} /> :
+          null
+      }
+    <\/section>
+```
+
+也就是说，如果如果我们页面中有demo，那么直接会插入到这个DOM中进而显示。也就是说preview就是解析后可以直接在页面中显示的部分。
+
+#### 1.5.2 处理页面中的doc内容（API部分和'页面演示'以上部分）
+
+不过我们上面分析的是一个process-demo文件(其会在markdownData中加上highlightCode,content,preview等其他的信息)，我们还有一个文件对markdown文件的API部分进行处理，也就是如下部分：
 ![](./api.png)
 
 我们接下来分析另外一个文件，也就是说当页面的文件路径filename没有'/demo'部分的时候就会经过下面的文件处理：
+
 ```js
 const JsonML = require('jsonml.js/lib/utils');
 //markdownData里面传入的jsonML,也就是文件内容通过mark-twain处理过了
@@ -599,7 +928,7 @@ module.exports = (markdownData) => {
 至于什么是demo页面，我们看看如下的图片,其实际上表示的就是我们在一个页面中显示的的内容,可以折叠展开的部分：
 [process-demo and process-doc](./demo.png)
 
-所以，`process-doc其实就是当页面中没有demo的时候我们做的特殊处理，其在API前面的都是content，剩下的部分就是API部分`。
+所以，`process-doc就是处理页面的非demo部分，其在API前面的都是content，剩下的部分就是API部分。也就是说，如果处理的是doc部分，那么我们的markdown部分只会有content和api部分这两个部分`。
 
 ### 1.5插件在bisheng-plugin-antd/lib/browser中做的修改
 
@@ -678,4 +1007,29 @@ module.exports = () =>
    })
 ```
 
-首先，和我们的所有的插件一样也是返回一个converters数组，然后根据不同node选择实例化不同的组件。
+首先，和我们的所有的插件一样也是返回一个converters数组，然后根据不同node选择实例化不同的组件。我们必须要弄明白一点，那就是我们的plugin的lib/browser下文件都是用于最后把jsomml转化成为我们的react组件的。
+
+```js
+  const browserPlugins = resolvePlugins(config.plugins, 'browser');
+  const pluginsString = browserPlugins.map(
+    (plugin) =>
+      `require('${plugin[0]}')(${JSON.stringify(plugin[1])})`
+  ).join(',\n');
+  var plugins = data.plugins;
+  var converters = chain(function (plugin) {
+    return plugin.converters || [];
+  }, plugins);
+  var utils = {
+    get: exist.get,
+    toReactComponent: function toReactComponent(jsonml) {
+      //我们的converters会被作为_toReactComponent的converters转换数组的
+      return _toReactComponent(jsonml, converters);
+    }
+  };
+```
+
+
+
+
+### 1.6 bisheng-plugin-antd具体的组件的渲染不要掌握，因为到时候也会根据项目来做，不过看懂也是好的，到时候可以随机应变
+

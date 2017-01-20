@@ -25,8 +25,6 @@ function getCode(node) {
     JsonML.getChildren(node)[0]
   )[0];
 }
-
-
 /*
 (1)中文部分的内容要满足以下的条件：
   首先：content内容部分

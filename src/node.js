@@ -9,7 +9,9 @@ const processDemo = require('./process-demo');
 module.exports = (markdownData, _, isBuild) => {
   const isDemo = /\/demo$/i.test(path.dirname(markdownData.meta.filename));
   if (isDemo) {
+  	//也就是这时候我们是处理一个组件的demo区域，包括组件预览需要的数据preview,hightlighted等用于浏览器显示
     return processDemo(markdownData, isBuild);
   }
+  //这时候处理非demo部分的页面内容
   return processDoc(markdownData);
 };
