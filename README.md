@@ -1213,5 +1213,31 @@ export default class ImagePreview extends React.Component {
 
 (3)如果是a标签不是以http协议头开头,那么我们都转化为Link标签
 
-### 1.6 bisheng-plugin-antd具体的组件的渲染不要掌握，因为到时候也会根据项目来做，不过看懂也是好的，到时候可以随机应变
+## 2.bisheng-plugin-antd的作用
+ 
+ (1)根据url结构判断是解析Demo部分还是解析Doc部分，如果是Demo部分，需要解析出highlightCode,content,preview,style,highlightStyle,meta等，如果是Doc部分我们只会解析出来content,API等部分，并把这些部分添加到markdownData上。
+
+ (2)添加Converters，当真正调用util上的方法的时候我们会使用它们把jsonml转化为react components。并根据不同的标签类型而实例化不同的组件
+
+ (3)为了展示在线iframe类型的Demo，我们需要创建一个独立的html文件，并把解析好的preview插入到其中
+
+ ```js
+   if (meta.iframe) {
+    const html = nunjucks.renderString(tmpl, {
+      id: meta.id,
+      style: markdownData.style,
+      script: babel.transform(getCode(markdownData.preview), babelrc).code,
+    });
+    const fileName = `demo-${Math.random()}.html`;
+    fs.writeFile(path.join(process.cwd(), '_site', fileName), html);
+    markdownData.src = path.join('/', fileName);
+  }
+```
+
+
+
+
+
+
+
 
